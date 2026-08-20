@@ -1,14 +1,14 @@
-.PHONY: generate demo clean
-generate:            ## two passes: 2nd materializes the outputs-sharing _tmgen-sharing.tf
+.PHONY: generate show clean
+generate:
 	terramate generate
 	terramate generate
 
-demo: generate       ## apply producer, then let the consumer read its output via sharing
-	cd stacks/producer && tofu init >/dev/null && tofu apply -auto-approve >/dev/null
-	cd stacks/consumer && tofu init >/dev/null
-	terramate run -C stacks/consumer --enable-sharing -- tofu apply -auto-approve >/dev/null
-	@printf '\nconsumer received: '
-	@cd stacks/consumer && tofu output -raw received && echo
+show: generate
+	@for b in deterministic lazy; do \
+	  echo "== $$b =="; \
+	  echo "  producer id       : $$(grep -o 'id *= *\"[^\"]*\"' stacks/$$b/producer/stack.tm.hcl)"; \
+	  echo "  consumer from_stack: $$(grep from_stack_id stacks/$$b/consumer/component_consumer__tmgen-sharing-inputs.tm.hcl | grep -o '\"[^\"]*\"')"; \
+	done
 
 clean:
 	find stacks -name .terraform -type d -prune -exec rm -rf {} + 2>/dev/null || true

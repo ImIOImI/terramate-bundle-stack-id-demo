@@ -1,0 +1,3 @@
+stack {
+  id = "deterministic-consumer"
+}
