@@ -12,26 +12,25 @@ hand-maintained id.
 ## Two ways to share the producer's stack id
 
 **Way 1 — a deterministic guid, known ahead of time (works today).**
-Create a stable guid once, and use it on *both* sides:
+The producer's **stack id lives in its stack metadata**. You create a guid once
+and *write it there*, then repeat that same known guid in the consumer's
+`from_stack_id`:
 
 ```hcl
-# bundles/pair/bundle.tm.hcl
-lets {
-  producer_id = tm_uuidv5("dns", "producer")   # deterministic; tm_uuid() would churn
-}
-# consumer wiring:
-producer_stack_id = bundle.let.producer_id
-```
-
-```hcl
-# stacks/producer/stack.tm.hcl  — the same guid, hand-seeded out of band
+# stacks/producer/stack.tm.hcl  — the guid IS the producer's stack id (metadata)
 stack { id = "2e2ea0f7-596a-57d6-b233-6deecf9941d5" }
 ```
 
-The catch: the guid lives in **two** places — the bundle `let` *and* the seeded
-`stack.tm.hcl` — and nothing links them. If they drift, outputs-sharing silently
-wires to the wrong id. `terramate generate` never mints the id you want; it only
-leaves your hand-seeded file alone.
+```hcl
+# bundles/pair/bundle.tm.hcl — the consumer repeats that same known guid
+producer_stack_id = "2e2ea0f7-596a-57d6-b233-6deecf9941d5"
+```
+
+The catch: the guid is hand-written in **two** unlinked places — the producer's
+`stack.tm.hcl` metadata *and* the consumer's wiring. Nothing computes or checks
+it; if they drift, outputs-sharing silently wires to the wrong id. `terramate
+generate` never mints the id for you here — it only leaves your hand-seeded
+`stack.tm.hcl` alone.
 
 **Way 2 — lazily address the sibling's id (proposed; errors on 0.17.1).**
 No guid, no out-of-band seed — the bundle resolves the producer stack's id at
