@@ -6,6 +6,11 @@ define "bundle" "metadata" {
 }
 
 define "bundle" {
+  lets {
+    # WAY 1 — a deterministic guid, "created" once (name-based so it is stable
+    # across `terramate generate`; tm_uuid() would churn). Used on BOTH sides.
+    producer_id = tm_uuidv5("dns", "producer") # == 2e2ea0f7-596a-57d6-b233-6deecf9941d5
+  }
   scaffolding {
     path = "/_scaffold-pair.tm.yml"
     name = "pair"
@@ -31,11 +36,23 @@ define bundle stack "consumer" {
   component "consumer" {
     source = "/components/consumer"
     inputs {
-      # The consumer must name the producer's stack id as a STATIC LITERAL for
-      # outputs-sharing's from_stack_id. The bundle cannot read or set the
-      # producer's id, so this literal must be kept in sync BY HAND with the
-      # pre-seeded stacks/producer/stack.tm.hcl. THIS is what the FR removes.
-      producer_stack_id = "producer"
+      # ── WAY 1 (works today) ─────────────────────────────────────────────
+      # A deterministic guid known ahead of time. Defined once in bundle.let
+      # AND hand-seeded as the producer's id in stacks/producer/stack.tm.hcl —
+      # the two must be kept in sync by hand (nothing links them).
+      producer_stack_id = bundle.let.producer_id
+
+      # ── WAY 2 (proposed; errors on Terramate 0.17.1) ────────────────────
+      # Lazily read the sibling stack's id — no guid, no out-of-band seed; the
+      # bundle resolves the producer stack's id at generate time:
+      #
+      #   producer_stack_id = bundle.pair.meta.id
+      #
+      # Today that fails with:
+      #   partial evaluation failed: eval expression:
+      #   This object does not have an attribute named "pair".
+      # (also tried: bundle.stacks.producer.metadata.id -> named "stacks";
+      #              bundle.producer.metadata.id         -> named "producer")
     }
   }
 }

@@ -9,6 +9,53 @@ Two stacks — `producer` and `consumer` — fan out from one bundle
 Terramate's outputs-sharing. It **works** (`make demo`) — but only because of a
 hand-maintained id.
 
+## Two ways to share the producer's stack id
+
+**Way 1 — a deterministic guid, known ahead of time (works today).**
+Create a stable guid once, and use it on *both* sides:
+
+```hcl
+# bundles/pair/bundle.tm.hcl
+lets {
+  producer_id = tm_uuidv5("dns", "producer")   # deterministic; tm_uuid() would churn
+}
+# consumer wiring:
+producer_stack_id = bundle.let.producer_id
+```
+
+```hcl
+# stacks/producer/stack.tm.hcl  — the same guid, hand-seeded out of band
+stack { id = "2e2ea0f7-596a-57d6-b233-6deecf9941d5" }
+```
+
+The catch: the guid lives in **two** places — the bundle `let` *and* the seeded
+`stack.tm.hcl` — and nothing links them. If they drift, outputs-sharing silently
+wires to the wrong id. `terramate generate` never mints the id you want; it only
+leaves your hand-seeded file alone.
+
+**Way 2 — lazily address the sibling's id (proposed; errors on 0.17.1).**
+No guid, no out-of-band seed — the bundle resolves the producer stack's id at
+generate time:
+
+```hcl
+# consumer wiring (proposed)
+producer_stack_id = bundle.pair.meta.id          # bundle.<name>.meta.id
+# or, matching the shape requested in terramate-io/terramate#2361:
+producer_stack_id = bundle.stacks.producer.metadata.id
+```
+
+Today every form fails — the `bundle` object exposes no sibling handle:
+
+```
+partial evaluation failed: eval expression:
+  This object does not have an attribute named "pair"     # bundle.pair.meta.id
+  ... named "stacks"                                       # bundle.stacks.producer.metadata.id
+  ... named "producer"                                     # bundle.producer.metadata.id
+```
+
+Way 2 is the ask: let a `define bundle stack` own its `id` (and expose siblings'
+ids), so sharing needs neither a guid nor a hand-seeded `stack.tm.hcl`.
+
 ## The gap
 
 Outputs-sharing wires a consumer to a producer by the producer's **stack id**:
