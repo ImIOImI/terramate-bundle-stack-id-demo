@@ -6,6 +6,12 @@ define "bundle" "metadata" {
 }
 
 define "bundle" {
+  # THE ID, minted once, in one place. (Your `let { id = guid() }`; the real
+  # spellings are `lets {}` + tm_uuidv5 — deterministic, so it doesn't churn.)
+  lets {
+    producer_id = tm_uuidv5("dns", "producer") # == 2e2ea0f7-596a-57d6-b233-6deecf9941d5
+  }
+
   scaffolding {
     path = "/_scaffold-pair.tm.yml"
     name = "pair"
@@ -16,6 +22,22 @@ define bundle stack "producer" {
   metadata {
     path = "/stacks/producer"
     name = "producer"
+
+    # ── THE ASK (way 1) ────────────────────────────────────────────────────
+    # Set the producer's stack id straight from the bundle let:
+    #
+    #   id = bundle.let.producer_id
+    #
+    # Errors on Terramate 0.17.1:
+    #   terramate schema error: unrecognized
+    #   "define.bundle.stack.<label>.metadata" attribute: valid attributes are
+    #   [after, before, description, name, path, tags, wanted_by, wants, watch]
+    #   but found "id"
+    #
+    # Until that exists, the id can't be pushed onto the stack from the bundle,
+    # so it is hand-seeded in stacks/producer/stack.tm.hcl to equal
+    # bundle.let.producer_id. That hand-seed is the ONLY workaround this repo
+    # needs — everything below already works.
   }
   component "producer" {
     source = "/components/producer"
@@ -31,24 +53,14 @@ define bundle stack "consumer" {
   component "consumer" {
     source = "/components/consumer"
     inputs {
-      # ── WAY 1 (works today) ─────────────────────────────────────────────
-      # The producer's stack id is a guid you create ahead of time and write as
-      # the producer's stack metadata (stacks/producer/stack.tm.hcl -> id = ...).
-      # You then repeat that SAME literal here for from_stack_id. Two hand-written
-      # copies of one guid; nothing links them, so drift silently mis-wires.
-      producer_stack_id = "2e2ea0f7-596a-57d6-b233-6deecf9941d5"
+      # The consumer reuses the SAME bundle let — one source of truth. This part
+      # already works today; from_stack_id resolves to bundle.let.producer_id.
+      producer_stack_id = bundle.let.producer_id
 
-      # ── WAY 2 (proposed; errors on Terramate 0.17.1) ────────────────────
-      # Lazily read the sibling stack's id — no guid, no out-of-band seed; the
-      # bundle resolves the producer stack's id at generate time:
-      #
+      # WAY 2 (proposed): skip the shared let entirely and lazily read the
+      # producer's own stack id from the consumer —
       #   producer_stack_id = bundle.pair.meta.id
-      #
-      # Today that fails with:
-      #   partial evaluation failed: eval expression:
-      #   This object does not have an attribute named "pair".
-      # (also tried: bundle.stacks.producer.metadata.id -> named "stacks";
-      #              bundle.producer.metadata.id         -> named "producer")
+      # errors today: This object does not have an attribute named "pair".
     }
   }
 }
