@@ -1,0 +1,4 @@
+apiVersion: terramate.io/cli/v1
+kind: BundleInstance
+metadata: { name: deterministic }
+spec: { source: /bundles/deterministic }

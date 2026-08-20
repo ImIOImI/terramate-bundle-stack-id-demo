@@ -1,41 +1,35 @@
 # terramate-bundle-stack-id-demo
 
-Minimal repro for a Terramate **Catalyst** gap: a `define bundle stack` cannot set
-(or address) a stack's **`id`**. That forces an out-of-band workaround to wire
-outputs-sharing (`from_stack_id`) between sibling stacks in a bundle.
+Repro for a Terramate **Catalyst** gap: a `define bundle stack` can neither **set**
+its own stack `id` nor **address** a sibling's, which is what you need to wire
+outputs-sharing (`from_stack_id`) between stacks in a bundle. Two bundles show the
+two shapes that would close it — both error on **0.17.1**.
 
-Two stacks — `producer` and `consumer` — fan out from one bundle
-(`bundles/pair`). The consumer reads an apply-computed value from the producer via
-Terramate's outputs-sharing. It **works** (`make demo`) — but only because of a
-hand-maintained id.
+Each bundle fans out a `producer` and a `consumer`; the consumer wants the
+producer's stack id for `from_stack_id`.
 
-## Two ways to share the producer's stack id
-
-**Way 1 — mint the id once in the bundle, set it on the stack (THE ASK).**
-Generate the id a single time in a bundle `let`, set it as the producer's stack
-id, and reuse that same `let` in the consumer — one source of truth, nothing
-hardcoded, nothing to keep in sync:
+## `bundles/deterministic/` — mint the id in the bundle, set it on the producer
 
 ```hcl
-# bundles/pair/bundle.tm.hcl
 define "bundle" {
   lets {
-    producer_id = tm_uuidv5("dns", "producer")   # your `guid()`; deterministic
+    id = tm_uuid()                       # RANDOM, minted once per `terramate generate`
   }
 }
-
 define bundle stack "producer" {
   metadata {
-    path = "/stacks/producer"
-    id   = bundle.let.producer_id                 # <-- THE ASK
+    path = "/stacks/deterministic/producer"
+    id   = bundle.let.id                 # ← THE ASK (rejected today)
   }
 }
-
-# consumer reuses the same let:
-producer_stack_id = bundle.let.producer_id
+# consumer reuses the same let (this already resolves today):
+producer_stack_id = bundle.let.id
 ```
 
-**Every line of this already works today except one** — `metadata.id`:
+`bundle.let.id` is evaluated **once per build**, so every reference in that build
+gets the same value — it *can* be the producer's id and the consumer's
+`from_stack_id` at the same time, and they match. (Regenerate and both move
+together.) The one rejected line:
 
 ```
 terramate schema error: unrecognized "define.bundle.stack.<label>.metadata"
@@ -43,122 +37,61 @@ attribute: valid attributes are [after, before, description, name, path, tags,
 wanted_by, wants, watch] but found "id"
 ```
 
-The bundle already mints the id in the `let`, and the consumer already resolves
-`bundle.let.producer_id` (verified). The *only* thing missing is the ability to
-push that id onto the producer's own stack. Until then you hand-seed it —
-`stacks/producer/stack.tm.hcl { id = "2e2ea0f7-…" }` set to equal
-`bundle.let.producer_id` — which is the single workaround this repo carries, and
-exactly what a settable `metadata.id` would delete.
+Because you can't set it, terramate mints the producer its **own** uuid instead,
+which never equals `bundle.let.id` — so the two diverge and sharing can't wire:
 
-**Way 2 — lazily address the sibling's id (proposed; errors on 0.17.1).**
-No guid, no out-of-band seed — the bundle resolves the producer stack's id at
-generate time:
+```
+producer's actual id (minted) : 0984b2f3-4cfa-45a2-8a5c-cd0e3bf40175
+consumer from_stack_id         : f0b5f7ff-42f3-374e-1e55-8b2d8d82a918   # = bundle.let.id
+```
+
+A settable `metadata.id` closes it: the producer's id becomes `bundle.let.id`,
+matching the consumer. (Ideally terramate also **persists** the minted id into
+`stack.tm.hcl` so it doesn't re-roll each generate.)
+
+## `bundles/lazy/` — terramate mints the id; the consumer reads it lazily
+
+Here the producer's `stack.tm.hcl` is left unseeded, so terramate mints it a
+random UUID (id "created at build time, in stack metadata"). The consumer wants
+to read that sibling's id:
 
 ```hcl
-# consumer wiring (proposed)
-producer_stack_id = bundle.pair.meta.id          # bundle.<name>.meta.id
-# or, matching the shape requested in terramate-io/terramate#2361:
-producer_stack_id = bundle.stacks.producer.metadata.id
+producer_stack_id = bundle.lazy.meta.id                # bundle.<name>.meta.id
+producer_stack_id = bundle.stacks.producer.metadata.id # (#2361 shape)
 ```
 
-Today every form fails — the `bundle` object exposes no sibling handle:
+Every form errors — the `bundle` object exposes no sibling handle:
 
 ```
-partial evaluation failed: eval expression:
-  This object does not have an attribute named "pair"     # bundle.pair.meta.id
-  ... named "stacks"                                       # bundle.stacks.producer.metadata.id
-  ... named "producer"                                     # bundle.producer.metadata.id
+This object does not have an attribute named "lazy" / "stacks" / "producer"
 ```
 
-Way 2 is the ask: let a `define bundle stack` own its `id` (and expose siblings'
-ids), so sharing needs neither a guid nor a hand-seeded `stack.tm.hcl`.
+(The repo uses a placeholder `from_stack_id` so it still parses; it can't resolve
+to the producer — that's the point.)
 
-## The gap
+## The single missing capability
 
-Outputs-sharing wires a consumer to a producer by the producer's **stack id**:
+- **deterministic** needs a **settable `id` in `define bundle stack metadata`**.
+- **lazy** needs an **addressable sibling id** (`bundle.<name>.meta.id`).
 
-```hcl
-# generated into the consumer stack
-input "message" {
-  backend       = "default"
-  from_stack_id = "producer"            # <-- must be the producer's literal stack id
-  value         = outputs.message.value
-}
-```
-
-But a `define bundle stack` has no way to set or read a stack id. Verified on
-Terramate **0.17.1**:
-
-```console
-# id inside metadata:
-terramate schema error: unrecognized "define.bundle.stack.<label>.metadata" attribute:
-  valid attributes are [after, before, description, name, path, tags, wanted_by, wants, watch] but found "id"
-
-# id as a stack attribute:
-terramate schema error: unrecognized "define.bundle.stack" attribute:
-  valid attributes are [condition] but found "id"
-```
-
-Terramate only mints a stack `id` (a UUID) into `stack.tm.hcl` when that file does
-**not already exist**. So the only way to get a *deterministic, knowable* id is to
-write `stack.tm.hcl` yourself, out of band, before `terramate generate`:
-
-```hcl
-# stacks/producer/stack.tm.hcl  — hand-seeded; the workaround
-stack { id = "producer" }
-```
-
-…then repeat that same literal (`"producer"`) in the bundle's consumer wiring
-(`bundles/pair/bundle.tm.hcl` → `producer_stack_id = "producer"`), and keep the two
-in sync by hand. Nothing in the bundle owns the id, and nothing can read a
-sibling's id.
-
-## The proposal
-
-Let a `define bundle stack` set its own `id`:
-
-```hcl
-define bundle stack "producer" {
-  metadata {
-    path = "/stacks/producer"
-    id   = "producer"        # <-- proposed
-  }
-}
-```
-
-The bundle then owns the id authoritatively — no out-of-band `stack.tm.hcl`
-seeding, and (paired with an addressable handle for sibling stacks) the consumer
-can wire `from_stack_id` without a hardcoded literal that silently drifts.
-
-## Run it
-
-```console
-$ make demo
-...
-consumer received: hello from the producer stack
-```
-
-No cloud provider needed — the producer is a `terraform_data` resource on local
-state, so the whole thing applies offline.
-
-## Layout
-
-```
-bundles/pair/bundle.tm.hcl          # 2 `define bundle stack`s: producer, consumer
-components/producer/                # emits a value + a sharing `output`
-components/consumer/                # a sharing `input` (from_stack_id) + a tofu output
-stacks/producer/stack.tm.hcl        # hand-seeded id = "producer"  ← the workaround
-stacks/consumer/stack.tm.hcl        # hand-seeded id = "consumer"
-```
-
-## Real-world context
-
-At scale (a hub/spoke EKS platform) this gap drives an entire
-`make/stack-ids.sh` + `make/create-stacks.sh` + inline id-formula machinery whose
-only job is to work around the missing settable id — see
+Either removes the out-of-band `stack.tm.hcl` seeding + hand-kept `from_stack_id`
+literal. At scale this is a whole shell layer — see
 [ImIOImI/terramate-eks-hubspoke](https://github.com/ImIOImI/terramate-eks-hubspoke)
-(`make/stack-ids.sh`, and the `network_stack_id = "${bundle.environment.id}-eks-network"`
-reproductions in `bundles/eks-cluster/bundle.tm.hcl`).
+(`make/stack-ids.sh` + `make/create-stacks.sh` + the `check-ids` gate, and the
+`network_stack_id = "${bundle.environment.id}-eks-network"` reproductions in
+`bundles/eks-cluster/bundle.tm.hcl`) — all of which a settable/addressable id deletes.
+
+## Try it
+
+```console
+$ terramate generate && terramate generate
+$ make show      # prints, for each bundle, the producer's id vs the consumer's from_stack_id
+```
+
+Note: `bundles/deterministic` uses `tm_uuid()`, which re-rolls every
+`terramate generate` (the consumer's `from_stack_id` changes each run). That churn
+is exactly why a bundle-set id should be **persisted** — it does not affect the
+producer↔consumer match within a build.
 
 ## Related upstream issues
 
