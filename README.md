@@ -11,26 +11,44 @@ hand-maintained id.
 
 ## Two ways to share the producer's stack id
 
-**Way 1 — a deterministic guid, known ahead of time (works today).**
-The producer's **stack id lives in its stack metadata**. You create a guid once
-and *write it there*, then repeat that same known guid in the consumer's
-`from_stack_id`:
+**Way 1 — mint the id once in the bundle, set it on the stack (THE ASK).**
+Generate the id a single time in a bundle `let`, set it as the producer's stack
+id, and reuse that same `let` in the consumer — one source of truth, nothing
+hardcoded, nothing to keep in sync:
 
 ```hcl
-# stacks/producer/stack.tm.hcl  — the guid IS the producer's stack id (metadata)
-stack { id = "2e2ea0f7-596a-57d6-b233-6deecf9941d5" }
+# bundles/pair/bundle.tm.hcl
+define "bundle" {
+  lets {
+    producer_id = tm_uuidv5("dns", "producer")   # your `guid()`; deterministic
+  }
+}
+
+define bundle stack "producer" {
+  metadata {
+    path = "/stacks/producer"
+    id   = bundle.let.producer_id                 # <-- THE ASK
+  }
+}
+
+# consumer reuses the same let:
+producer_stack_id = bundle.let.producer_id
 ```
 
-```hcl
-# bundles/pair/bundle.tm.hcl — the consumer repeats that same known guid
-producer_stack_id = "2e2ea0f7-596a-57d6-b233-6deecf9941d5"
+**Every line of this already works today except one** — `metadata.id`:
+
+```
+terramate schema error: unrecognized "define.bundle.stack.<label>.metadata"
+attribute: valid attributes are [after, before, description, name, path, tags,
+wanted_by, wants, watch] but found "id"
 ```
 
-The catch: the guid is hand-written in **two** unlinked places — the producer's
-`stack.tm.hcl` metadata *and* the consumer's wiring. Nothing computes or checks
-it; if they drift, outputs-sharing silently wires to the wrong id. `terramate
-generate` never mints the id for you here — it only leaves your hand-seeded
-`stack.tm.hcl` alone.
+The bundle already mints the id in the `let`, and the consumer already resolves
+`bundle.let.producer_id` (verified). The *only* thing missing is the ability to
+push that id onto the producer's own stack. Until then you hand-seed it —
+`stacks/producer/stack.tm.hcl { id = "2e2ea0f7-…" }` set to equal
+`bundle.let.producer_id` — which is the single workaround this repo carries, and
+exactly what a settable `metadata.id` would delete.
 
 **Way 2 — lazily address the sibling's id (proposed; errors on 0.17.1).**
 No guid, no out-of-band seed — the bundle resolves the producer stack's id at
