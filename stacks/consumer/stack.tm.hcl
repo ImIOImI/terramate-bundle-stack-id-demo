@@ -1,0 +1,3 @@
+stack {
+  id = "consumer"
+}
